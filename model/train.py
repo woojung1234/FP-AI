@@ -13,6 +13,9 @@ from dataset import map_graph_nodes, edges_index, BPRDataset
 from plot import test_visualization, all_score_visualization
 from models import NeuralCF
 
+# 강제로 CUDA 사용 설정
+FORCE_CUDA = True
+
 def set_seed(seed=123):
     random.seed(seed)
     np.random.seed(seed)
@@ -44,20 +47,35 @@ def bpr_loss(pos_scores, neg_scores):
     return -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores) + 1e-10))
 
 def train_model(model, train_loader, val_loader, edges_index, edges_weights, edges_type, num_epochs=10, lr=0.0002, weight_decay=1e-5):
-    # 항상 GPU 사용 시도 (가능하면 cuda:0, 아니면 cpu)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    torch.manual_seed(123)
+    # CUDA 강제 설정 확인
+    if FORCE_CUDA:
+        device = torch.device('cuda')
+        print("FORCE_CUDA is enabled. Using GPU for training.")
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # CUDA 가용성 확인 및 디버그 정보 출력
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"CUDA device count: {torch.cuda.device_count()}")
     
     # GPU 정보 출력
     if torch.cuda.is_available():
         print(f"Using GPU: {torch.cuda.get_device_name(0)}")
         print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        print("No GPU available, using CPU instead")
     
-    model.to(device)
+    # 모델을 디바이스로 이동
+    print(f"Moving model to {device}")
+    model = model.to(device)
     
+    # 데이터를 디바이스로 이동
+    print(f"Moving graph data to {device}")
     edges_index = edges_index.to(device)
     edges_weights = edges_weights.to(device)
     edges_type = edges_type.to(device).long()
+    
+    # 학습 모드 설정
     model.train()
 
     #criterion = bpr_loss()
@@ -80,6 +98,7 @@ def train_model(model, train_loader, val_loader, edges_index, edges_weights, edg
             pos = pos.long()   
             neg = neg.long()
 
+            # 명시적으로 디바이스로 이동
             user, pos, neg = user.to(device), pos.to(device), neg.to(device)
 
             optimizer.zero_grad()
@@ -103,7 +122,6 @@ def train_model(model, train_loader, val_loader, edges_index, edges_weights, edg
 
             neg_output = model(user, hard_neg, edges_index, edges_type, edges_weights)
             loss = bpr_loss(pos_output, neg_output)
-            #loss = criterion(output, label)
 
             loss.backward()
             optimizer.step()
@@ -112,11 +130,6 @@ def train_model(model, train_loader, val_loader, edges_index, edges_weights, edg
             # Calculate ranking accuracy for BPR
             correct += (pos_output > neg_output).sum().item()  # Count correct rankings
             total += pos.size(0)  # Total number of positive samples
-            
-            """total_loss += loss.item() * label.size(0)
-            predicted = (output > 0.5).float()
-            correct += (predicted == label).sum().item()
-            total += label.size(0)"""
 
         avg_loss = total_loss / total
         acc = correct / total
@@ -140,17 +153,10 @@ def train_model(model, train_loader, val_loader, edges_index, edges_weights, edg
                 neg_output = model(user, neg, edges_index, edges_type, edges_weights)
                 loss = bpr_loss(pos_output, neg_output)
                 
-                # loss = criterion(output, label)
-                
                 val_loss += loss.item() * pos.size(0)
                 # Calculate ranking accuracy for BPR
                 val_correct += (pos_output > neg_output).sum().item()  # Count correct rankings
                 val_total += pos.size(0)  # Total number of positive samples
-
-                """val_loss += loss.item() * label.size(0)
-                predicted = (output > 0.5).float()
-                val_correct += (predicted == label).sum().item()
-                val_total += label.size(0)"""
         
         avg_val_loss = val_loss / val_total
         val_acc = val_correct / val_total
@@ -174,7 +180,12 @@ def train_model(model, train_loader, val_loader, edges_index, edges_weights, edg
             break
 
 if __name__ == "__main__":
-    #set_seed()
+    # CUDA 초기 설정 확인
+    print(f"Initial CUDA check - Available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"Initial GPU name: {torch.cuda.get_device_name(0)}")
+        # GPU 메모리 사용량 확인
+        print(f"Initial GPU memory: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB used, {torch.cuda.memory_reserved(0) / 1e9:.2f} GB reserved")
 
     print("Loading data...")
     mapping = map_graph_nodes()
@@ -182,7 +193,6 @@ if __name__ == "__main__":
     lid_to_idx = mapping['liquor']
     iid_to_idx = mapping['ingredient']
 
-    #print(lid_to_idx)
     print("Loading graph data...")
     
     edge_type_map ={
@@ -208,34 +218,22 @@ if __name__ == "__main__":
 
     negative_pairs['liquor_id'] = negative_pairs['liquor_id'].map(lid_to_idx)
     negative_pairs['ingredient_id'] = negative_pairs['ingredient_id'].map(iid_to_idx)
-
-    """
-    num_users = 155 # Number of unique liquor IDs
-    num_items = 6498 # Number of unique ingredient IDs
-    """
     
     print("Creating dataset...")
-    #positive_pairs['label'] = 1
-    #negative_pairs['label'] = 0
-
-    #all_pairs = pd.concat([positive_pairs, negative_pairs], ignore_index=True)
     
     train_val_pairs, test_pairs = train_test_split(positive_pairs, test_size=0.2, random_state=42)
     train_pairs, val_pairs = train_test_split(train_val_pairs, test_size=0.2, random_state=42)
-    
-    """train_dataset = InteractionDataset(positive_pairs=train_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)
-    val_dataset = InteractionDataset(positive_pairs=val_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)
-    test_dataset = InteractionDataset(positive_pairs=test_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)"""
     
     train_dataset = BPRDataset(positive_pairs=train_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)
     val_dataset = BPRDataset(positive_pairs=val_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)
     test_dataset = BPRDataset(positive_pairs=test_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)
     
     # GPU 메모리 최적화 설정을 위한 DataLoader 파라미터 추가
-    num_workers = 4 if torch.cuda.is_available() else 0
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
+    # Colab 환경에서는 num_workers=0이 더 안정적일 수 있음
+    num_workers = 0 
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, pin_memory=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, pin_memory=True, num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, pin_memory=True, num_workers=num_workers)
 
     print("Creating model...")
     model = NeuralCF(num_users=155, num_items=6498, emb_size=128)
@@ -248,9 +246,11 @@ if __name__ == "__main__":
 
     # 최종 모델 로드 및 평가  
     try:
-        model.load_state_dict(torch.load("./model/checkpoint/best_model.pth"))
+        # GPU가 있으면 GPU에 로드, 아니면 CPU에 로드
+        if FORCE_CUDA or torch.cuda.is_available():
+            model.load_state_dict(torch.load("./model/checkpoint/best_model.pth"))
+        else:
+            model.load_state_dict(torch.load("./model/checkpoint/best_model.pth", map_location=torch.device('cpu')))
         test_visualization(model, test_loader, edges_indexes, edges_weights, edges_type)
     except Exception as e:
         print(f"Error loading model or visualizing results: {e}")
-
-    #all_score_visualization(edges_indexes, edges_weights, edges_type)
