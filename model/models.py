@@ -64,8 +64,14 @@ class NeuralCF(nn.Module):
             edge_index   :   GNN에서 사용할 edge_index
             edge_weight  :   GNN에서 사용할 edge_weight (default: None)
         """
+        # 디바이스 확인 및 일치시키기
+        device = edge_index.device
+        
+        # 아래 연산에서 사용할 인덱스 텐서를 디바이스로 이동시킴
+        node_indices = torch.arange(self.num_nodes, device=device)
+        
         # RGCN 기반 임베딩
-        x = self.embedding(torch.arange(self.num_nodes, device=edge_index.device))
+        x = self.embedding(node_indices)
         
         x = self.wrgcn(x, edge_index, edge_type, edge_weight)
         x = F.relu(x)
@@ -76,6 +82,16 @@ class NeuralCF(nn.Module):
         x = F.dropout(x, p=0.2, training=self.training)
         x = self.norm2(x)
         x = self.wrgcn3(x, edge_index, edge_type, edge_weight)
+
+        # 디바이스 확인 로그
+        if torch.cuda.is_available() and user_indices.device.type != 'cuda':
+            print(f"Warning: Device mismatch - user_indices on {user_indices.device}, model on {next(self.parameters()).device}")
+            
+        # 인덱스가 같은 디바이스에 있는지 확인 및 이동
+        if user_indices.device != device:
+            user_indices = user_indices.to(device)
+        if item_indices.device != device:
+            item_indices = item_indices.to(device)
 
         # GNN 결과 슬라이싱
         gmf_user_emb = x[user_indices]
@@ -138,8 +154,20 @@ class WeightedRGCNConv(MessagePassing):
         edge_weight: [num_edges] or None
         """
         
+        # 디바이스 확인 및 일치시키기
+        device = edge_index.device
+        
+        # 모든 텐서가 같은 디바이스에 있는지 확인
+        if x.device != device:
+            x = x.to(device)
+        if edge_type.device != device:
+            edge_type = edge_type.to(device)
+        
         if edge_weight is None:
-            edge_weight = torch.ones(edge_index.size(1), device=edge_index.device)
+            edge_weight = torch.ones(edge_index.size(1), device=device)
+        else:
+            if edge_weight.device != device:
+                edge_weight = edge_weight.to(device)
 
         return self.propagate(edge_index, x=x, edge_type=edge_type, edge_weight=edge_weight)
 
@@ -150,8 +178,11 @@ class WeightedRGCNConv(MessagePassing):
         edge_weight: edge weights [num_edges]
         """
 
+        # 디바이스 확인
+        device = x_j.device
+        
         # 각 관계에 따라 다른 transformation
-        out = torch.zeros(x_j.size(0), self.out_channels, device=x_j.device)
+        out = torch.zeros(x_j.size(0), self.out_channels, device=device)
 
         for r in range(self.num_relations):
             mask = edge_type == r
