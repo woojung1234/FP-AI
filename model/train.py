@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import numpy as np
 import random
+import os
 
 from dataset import map_graph_nodes, edges_index, BPRDataset
 from plot import test_visualization, all_score_visualization
@@ -43,8 +44,14 @@ def bpr_loss(pos_scores, neg_scores):
     return -torch.mean(torch.log(torch.sigmoid(pos_scores - neg_scores) + 1e-10))
 
 def train_model(model, train_loader, val_loader, edges_index, edges_weights, edges_type, num_epochs=10, lr=0.0002, weight_decay=1e-5):
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    # 항상 GPU 사용 시도 (가능하면 cuda:0, 아니면 cpu)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(123)
+    
+    # GPU 정보 출력
+    if torch.cuda.is_available():
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     
     model.to(device)
     
@@ -149,6 +156,9 @@ def train_model(model, train_loader, val_loader, edges_index, edges_weights, edg
         val_acc = val_correct / val_total
         
         print(f"[Validation] Loss: {avg_val_loss:.4f} | Accuracy: {val_acc:.4f}")
+        
+        # 체크포인트 디렉토리 존재 확인 및 생성
+        os.makedirs("./model/checkpoint", exist_ok=True)
         torch.save(model.state_dict(), f"./model/checkpoint/epoch_{epoch}.pth")
         
         if avg_val_loss < best_val_loss:
@@ -221,9 +231,11 @@ if __name__ == "__main__":
     val_dataset = BPRDataset(positive_pairs=val_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)
     test_dataset = BPRDataset(positive_pairs=test_pairs, hard_negatives=negative_pairs, num_users=155, num_items=6498)
     
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    # GPU 메모리 최적화 설정을 위한 DataLoader 파라미터 추가
+    num_workers = 4 if torch.cuda.is_available() else 0
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
     print("Creating model...")
     model = NeuralCF(num_users=155, num_items=6498, emb_size=128)
@@ -231,7 +243,14 @@ if __name__ == "__main__":
     print("Training model...")
     train_model(model=model, train_loader=train_loader, val_loader=val_loader, edges_type=edges_type, edges_index=edges_indexes, edges_weights=edges_weights, num_epochs=200)
 
-    model.load_state_dict(torch.load("./model/checkpoint/best_model.pth"))
-    test_visualization(model, test_loader,edges_indexes, edges_weights, edges_type)
+    # checkpoint 디렉토리 존재 확인 
+    os.makedirs("./model/checkpoint", exist_ok=True)
+
+    # 최종 모델 로드 및 평가  
+    try:
+        model.load_state_dict(torch.load("./model/checkpoint/best_model.pth"))
+        test_visualization(model, test_loader, edges_indexes, edges_weights, edges_type)
+    except Exception as e:
+        print(f"Error loading model or visualizing results: {e}")
 
     #all_score_visualization(edges_indexes, edges_weights, edges_type)
